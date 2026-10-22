@@ -3,16 +3,21 @@
 When a form is submitted in KoboToolbox, a Kobo **REST Service** calls the GitHub
 API, which starts the workflow in `.github/workflows/kobo-pdf-email.yml`. The workflow:
 
-1. asks the Kobo API for a fresh Enketo **view** link for that submission,
-2. opens it in headless Chromium (Playwright) and prints it to PDF,
+1. downloads the submission and the form definition from the Kobo API,
+2. lays out every answered question (label + answer, grouped by section,
+   choice labels instead of codes, photos embedded) and prints it to PDF
+   with headless Chromium (Playwright),
 3. emails the PDF to the address entered in the form.
+
+The Enketo "view" page is not used: it only loads for someone logged in to
+Kobo, which the GitHub runner is not.
 
 ```
 Kobo submission ──REST Service──▶ api.github.com/repos/<owner>/<repo>/dispatches
                                         │
                                         ▼
                            GitHub Action (repository_dispatch)
-                 Kobo API → Enketo view URL → Chromium → PDF → SMTP
+              Kobo API (form + answers) → HTML → Chromium → PDF → SMTP
 ```
 
 > Use a **private** repository: submission data passes through the Actions run.
@@ -34,6 +39,7 @@ Kobo submission ──REST Service──▶ api.github.com/repos/<owner>/<repo>/
 | `KOBO_SERVER` | `https://kf.kobotoolbox.org` | `https://eu.kobotoolbox.org` for the EU server |
 | `KOBO_ASSET_UID` | `aBcD123...` | **Required.** From the project URL: `.../#/forms/<ASSET_UID>/...` |
 | `EMAIL_FIELD` | `email` | Name of the email question in XLSForm (group prefix not needed). If empty, the first answer that looks like an email is used. |
+| `FORM_LANGUAGE` | `English` | Optional, for multi-language forms: which label language to print |
 | `SMTP_HOST` | `smtp.gmail.com` | |
 | `SMTP_PORT` | `465` | `465` = SSL, anything else = STARTTLS (e.g. `587`) |
 | `MAIL_FROM` | `Survey Team <you@gmail.com>` | Optional, defaults to `SMTP_USERNAME` |
@@ -80,7 +86,6 @@ in the REST Service log, where failed calls can be retried.
 | The PDF file | Nobody | Created on a throwaway GitHub runner, deleted when the job ends; not uploaded as an artifact |
 | `KOBO_TOKEN` | Nobody (masked secret) | But anyone with **write** access to the repo could change the workflow and use it, so give write access only to people allowed to see the data |
 | GitHub token in Kobo | Kobo project admins | They can already see all submissions. Someone holding it can only trigger an email of a submission to *its own* recipient |
-| Enketo view link | Not logged or emailed | Generated fresh inside the job and used only by the headless browser |
 
 Recommended:
 - Keep the repo **private** with as few collaborators as possible.

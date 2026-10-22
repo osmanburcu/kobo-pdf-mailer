@@ -37,6 +37,7 @@ jobs:
           KOBO_SERVER: ${{ vars.KOBO_SERVER }}
           KOBO_ASSET_UID: ${{ vars.KOBO_ASSET_UID }}
           EMAIL_FIELD: ${{ vars.EMAIL_FIELD }}
+          FORM_LANGUAGE: ${{ vars.FORM_LANGUAGE }}
           MAIL_SUBJECT: ${{ vars.MAIL_SUBJECT }}
           MAIL_BODY: ${{ vars.MAIL_BODY }}
           MAIL_FROM: ${{ vars.MAIL_FROM }}

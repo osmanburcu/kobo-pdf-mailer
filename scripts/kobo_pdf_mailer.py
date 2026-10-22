@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Render a KoboToolbox submission (Enketo view) to PDF and email it to the
-address entered in the form.
+"""Turn a KoboToolbox submission into a PDF (question labels + answers) and
+email it to the address entered in the form.
 
 The submission id comes from the repository_dispatch event (sent by a Kobo
-REST Service) or from SUBMISSION_ID (manual run); the data itself is always
-fetched from the Kobo API.
+REST Service) or from SUBMISSION_ID (manual run); the form and the answers
+are always fetched from the Kobo API.
 """
+import base64
+import html
 import json
 import os
 import re
 import smtplib
 import sys
+from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -20,7 +23,30 @@ from playwright.sync_api import sync_playwright
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 KOBO_SERVER = os.environ.get("KOBO_SERVER", "https://kf.kobotoolbox.org").rstrip("/")
-KOBO_HEADERS = {"Authorization": f"Token {os.environ['KOBO_TOKEN']}"}
+KOBO_HEADERS = {"Authorization": f"Token {os.environ.get('KOBO_TOKEN', '')}"}
+
+# Question types that hold no answer worth printing.
+SKIP_TYPES = {
+    "calculate", "start", "end", "today", "deviceid", "username", "phonenumber",
+    "simserial", "subscriberid", "audit", "hidden", "note", "start-geopoint",
+    "background-audio", "xml-external", "csv-external",
+}
+
+CSS = """
+body { font-family: Arial, Helvetica, sans-serif; font-size: 11pt; color: #222; }
+h1 { font-size: 18pt; margin: 0 0 4px; }
+.meta { color: #666; font-size: 9pt; margin-bottom: 18px; }
+h2 { font-size: 12.5pt; background: #eef1f5; padding: 6px 8px; margin: 18px 0 6px; }
+section section h2 { background: none; border-bottom: 1px solid #ccd; padding: 4px 0; }
+.q { display: flex; gap: 12px; padding: 6px 0; border-bottom: 1px solid #eee;
+     page-break-inside: avoid; }
+.label { flex: 0 0 42%; font-weight: bold; }
+.answer { flex: 1; white-space: pre-wrap; word-break: break-word; }
+.answer img { max-width: 100%; max-height: 90mm; }
+.repeat-item { border-left: 3px solid #ccd; padding-left: 10px; margin: 8px 0; }
+.repeat-no { color: #666; font-size: 9pt; }
+ul { margin: 0; padding-left: 18px; }
+"""
 
 
 def env(name, default=None):
@@ -28,10 +54,15 @@ def env(name, default=None):
     return value or default
 
 
-def kobo_get(path, **params):
-    r = requests.get(f"{KOBO_SERVER}{path}", headers=KOBO_HEADERS, params=params, timeout=60)
+def kobo_request(path_or_url, **params):
+    url = path_or_url if path_or_url.startswith("http") else f"{KOBO_SERVER}{path_or_url}"
+    r = requests.get(url, headers=KOBO_HEADERS, params=params, timeout=60)
     r.raise_for_status()
-    return r.json()
+    return r
+
+
+def kobo_get(path, **params):
+    return kobo_request(path, **params).json()
 
 
 def submission_id():
@@ -45,10 +76,6 @@ def submission_id():
     else:
         raw = env("SUBMISSION_ID")
     return int(raw)
-
-
-def load_submission(asset_uid, sub_id):
-    return kobo_get(f"/api/v2/assets/{asset_uid}/data/{sub_id}/", format="json")
 
 
 def find_recipient(submission):
@@ -69,42 +96,155 @@ def find_recipient(submission):
     return None
 
 
-def enketo_view_url(asset_uid, sub_id):
-    # Asking the API for the view link also (re)loads the instance into Enketo,
-    # so the link is always fresh.
-    data = kobo_get(f"/api/v2/assets/{asset_uid}/data/{sub_id}/enketo/view/", return_url="false")
-    return data["url"]
+# ---------------------------------------------------------------- PDF content
+
+def item_name(item):
+    return item.get("name") or item.get("$autoname") or ""
 
 
-def render_pdf(url, out_path):
+class Form:
+    """The parts of the Kobo form definition needed to label answers."""
+
+    def __init__(self, asset):
+        content = asset.get("content", {})
+        self.title = asset.get("name") or "Form submission"
+        self.lang = self._language_index(content.get("translations") or [None])
+        self.tree = self._build_tree(content.get("survey", []))
+        self.choices = {
+            (c.get("list_name"), item_name(c)): self.label(c)
+            for c in content.get("choices", [])
+        }
+
+    @staticmethod
+    def _language_index(translations):
+        wanted = (env("FORM_LANGUAGE") or "").lower()
+        for i, name in enumerate(translations):
+            if wanted and name and wanted in name.lower():
+                return i
+        return 0
+
+    @staticmethod
+    def _build_tree(rows):
+        # Kobo stores the survey flat with begin/end markers; nest it.
+        root = {"children": []}
+        stack = [root]
+        for row in rows:
+            kind = row.get("type", "").replace(" ", "_")
+            if kind in ("begin_group", "begin_repeat"):
+                node = {"row": row, "repeat": kind == "begin_repeat", "children": []}
+                stack[-1]["children"].append(node)
+                stack.append(node)
+            elif kind in ("end_group", "end_repeat"):
+                if len(stack) > 1:
+                    stack.pop()
+            else:
+                stack[-1]["children"].append({"row": row})
+        return root["children"]
+
+    def label(self, item):
+        label = item.get("label")
+        if isinstance(label, list):
+            picked = label[self.lang] if self.lang < len(label) else None
+            label = picked or next((l for l in label if l), None)
+        return label or item_name(item)
+
+
+class Renderer:
+    def __init__(self, form, submission):
+        self.form = form
+        self.submission = submission
+        self.attachments = submission.get("_attachments", [])
+
+    def render(self):
+        submitted = self.submission.get("_submission_time", "")
+        try:
+            submitted = datetime.fromisoformat(submitted).strftime("%d %B %Y, %H:%M UTC")
+        except ValueError:
+            pass
+        body = self.nodes(self.form.tree, self.submission, "")
+        return (
+            f"<!doctype html><html><head><meta charset='utf-8'><style>{CSS}</style></head><body>"
+            f"<h1>{html.escape(self.form.title)}</h1>"
+            f"<div class='meta'>Submitted: {html.escape(submitted)} &nbsp;·&nbsp; "
+            f"Submission #{self.submission['_id']}</div>{body}</body></html>"
+        )
+
+    def nodes(self, nodes, data, prefix):
+        out = []
+        for node in nodes:
+            row = node["row"]
+            path = prefix + item_name(row)
+            if "children" in node:
+                if node["repeat"]:
+                    items = data.get(path) or []
+                    inner = "".join(
+                        f"<div class='repeat-item'><div class='repeat-no'>#{i}</div>"
+                        f"{self.nodes(node['children'], item, path + '/')}</div>"
+                        for i, item in enumerate(items, 1)
+                    )
+                else:
+                    inner = self.nodes(node["children"], data, path + "/")
+                if inner:  # skip groups with no answered questions
+                    out.append(f"<section><h2>{html.escape(self.form.label(row))}</h2>{inner}</section>")
+                continue
+
+            kind = row.get("type", "")
+            value = data.get(path)
+            if kind in SKIP_TYPES or value in (None, ""):
+                continue
+            out.append(
+                f"<div class='q'><div class='label'>{html.escape(self.form.label(row))}</div>"
+                f"<div class='answer'>{self.answer(row, kind, value)}</div></div>"
+            )
+        return "".join(out)
+
+    def answer(self, row, kind, value):
+        list_name = row.get("select_from_list_name")
+        if kind == "select_one":
+            return html.escape(self.form.choices.get((list_name, str(value)), str(value)))
+        if kind == "select_multiple":
+            labels = [self.form.choices.get((list_name, v), v) for v in str(value).split()]
+            return "<ul>" + "".join(f"<li>{html.escape(l)}</li>" for l in labels) + "</ul>"
+        if kind == "image":
+            img = self.image(str(value))
+            if img:
+                return img
+        return html.escape(str(value))
+
+    def image(self, filename):
+        for att in self.attachments:
+            stored = att.get("filename", "")
+            if stored == filename or stored.endswith("/" + filename) or att.get("media_file_basename") == filename:
+                url = att.get("download_large_url") or att.get("download_url")
+                if not url:
+                    return None
+                data = kobo_request(url).content
+                mime = att.get("mimetype") or "image/jpeg"
+                return f"<img src='data:{mime};base64,{base64.b64encode(data).decode()}'>"
+        return None
+
+
+def render_pdf(page_html, out_path):
     with sync_playwright() as p:
         browser = p.chromium.launch()
-        page = browser.new_page(viewport={"width": 1200, "height": 1600})
-        failed = []
-        page.on("response", lambda r: r.status >= 400 and failed.append(f"{r.status} {r.url.split('?')[0]}"))
-        page.goto(url, wait_until="networkidle", timeout=120_000)
-        try:
-            page.wait_for_selector("form.or", state="visible", timeout=60_000)
-        except Exception:
-            # Diagnostics only: URLs without query strings and Enketo's error
-            # dialog, so no answers end up in the log.
-            print("Form did not load.")
-            print("  Final page:", page.url.split("?")[0], "|", page.title())
-            print("  Failed requests:", failed or "none")
-            dialog = page.locator(".vex-dialog-message, .vex-content")
-            if dialog.count():
-                print("  Enketo message:", dialog.first.inner_text()[:300].replace("\n", " "))
-            raise
-        page.wait_for_timeout(2_000)  # let Enketo finish populating answers/images
-        page.emulate_media(media="print")
+        page = browser.new_page()
+        page.set_content(page_html, wait_until="load")
         page.pdf(
             path=str(out_path),
             format="A4",
             print_background=True,
-            margin={"top": "12mm", "bottom": "12mm", "left": "10mm", "right": "10mm"},
+            margin={"top": "15mm", "bottom": "15mm", "left": "14mm", "right": "14mm"},
+            display_header_footer=True,
+            header_template="<span></span>",
+            footer_template=(
+                "<div style='font-size:8pt;color:#888;width:100%;text-align:center'>"
+                "Page <span class='pageNumber'></span> of <span class='totalPages'></span></div>"
+            ),
         )
         browser.close()
 
+
+# ---------------------------------------------------------------- email
 
 def send_mail(recipient, pdf_path, submission):
     msg = EmailMessage()
@@ -148,15 +288,16 @@ def main():
     if not asset_uid:
         sys.exit("KOBO_ASSET_UID is not set.")
     sub_id = submission_id()
-    submission = load_submission(asset_uid, sub_id)
+    submission = kobo_get(f"/api/v2/assets/{asset_uid}/data/{sub_id}/", format="json")
 
     recipient = find_recipient(submission)
     if not recipient:
         print(f"Submission {sub_id}: no valid email address found, nothing sent.")
         return
 
+    form = Form(kobo_get(f"/api/v2/assets/{asset_uid}/", format="json"))
     pdf_path = Path(env("RUNNER_TEMP", ".")) / f"submission-{sub_id}.pdf"
-    render_pdf(enketo_view_url(asset_uid, sub_id), pdf_path)
+    render_pdf(Renderer(form, submission).render(), pdf_path)
     send_mail(recipient, pdf_path, submission)
     # Logs may be visible to repo collaborators, so don't print the full address.
     print(f"Submission {sub_id}: PDF sent to {mask(recipient)}")
