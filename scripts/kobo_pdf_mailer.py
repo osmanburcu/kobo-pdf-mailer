@@ -80,8 +80,21 @@ def render_pdf(url, out_path):
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1200, "height": 1600})
+        failed = []
+        page.on("response", lambda r: r.status >= 400 and failed.append(f"{r.status} {r.url.split('?')[0]}"))
         page.goto(url, wait_until="networkidle", timeout=120_000)
-        page.wait_for_selector("form.or", state="visible", timeout=120_000)
+        try:
+            page.wait_for_selector("form.or", state="visible", timeout=60_000)
+        except Exception:
+            # Diagnostics only: URLs without query strings and Enketo's error
+            # dialog, so no answers end up in the log.
+            print("Form did not load.")
+            print("  Final page:", page.url.split("?")[0], "|", page.title())
+            print("  Failed requests:", failed or "none")
+            dialog = page.locator(".vex-dialog-message, .vex-content")
+            if dialog.count():
+                print("  Enketo message:", dialog.first.inner_text()[:300].replace("\n", " "))
+            raise
         page.wait_for_timeout(2_000)  # let Enketo finish populating answers/images
         page.emulate_media(media="print")
         page.pdf(
