@@ -43,6 +43,7 @@ Kobo submission ──REST Service──▶ api.github.com/repos/<owner>/<repo>/
 | `SMTP_HOST` | `smtp.gmail.com` | |
 | `SMTP_PORT` | `465` | `465` = SSL, anything else = STARTTLS (e.g. `587`) |
 | `MAIL_FROM` | `Survey Team <you@gmail.com>` | Optional, defaults to `SMTP_USERNAME` |
+| `MAIL_FROM_NAME` | `Survey Team` | Optional sender name shown in the inbox; the address stays `MAIL_FROM` / `SMTP_USERNAME` |
 | `MAIL_SUBJECT` | `Your form submission` | Optional |
 | `MAIL_BODY` | | Optional plain-text body |
 | `MAIL_BCC` | `archive@example.org` | Optional, get a copy of every email |

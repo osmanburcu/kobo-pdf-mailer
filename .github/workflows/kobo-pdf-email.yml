@@ -41,6 +41,7 @@ jobs:
           MAIL_SUBJECT: ${{ vars.MAIL_SUBJECT }}
           MAIL_BODY: ${{ vars.MAIL_BODY }}
           MAIL_FROM: ${{ vars.MAIL_FROM }}
+          MAIL_FROM_NAME: ${{ vars.MAIL_FROM_NAME }}
           MAIL_BCC: ${{ vars.MAIL_BCC }}
           SMTP_HOST: ${{ vars.SMTP_HOST }}
           SMTP_PORT: ${{ vars.SMTP_PORT }}

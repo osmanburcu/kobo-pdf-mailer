@@ -15,6 +15,7 @@ import smtplib
 import sys
 from datetime import datetime
 from email.message import EmailMessage
+from email.utils import formataddr, parseaddr
 from pathlib import Path
 
 import requests
@@ -248,7 +249,10 @@ def render_pdf(page_html, out_path):
 
 def send_mail(recipient, pdf_path, submission):
     msg = EmailMessage()
-    msg["From"] = env("MAIL_FROM", env("SMTP_USERNAME"))
+    sender = env("MAIL_FROM", env("SMTP_USERNAME"))
+    if env("MAIL_FROM_NAME"):
+        sender = formataddr((env("MAIL_FROM_NAME"), parseaddr(sender)[1]))
+    msg["From"] = sender
     msg["To"] = recipient
     if env("MAIL_BCC"):
         msg["Bcc"] = env("MAIL_BCC")
