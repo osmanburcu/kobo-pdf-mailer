@@ -227,7 +227,7 @@ class Renderer:
 
 def render_pdf(page_html, out_path):
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        browser = p.chromium.launch(channel="chrome")  # preinstalled on GitHub runners
         page = browser.new_page()
         page.set_content(page_html, wait_until="load")
         page.pdf(

@@ -23,10 +23,10 @@ jobs:
           python-version: "3.12"
           cache: pip
 
+      # No "playwright install": the script uses the Google Chrome that is
+      # preinstalled on ubuntu-latest, which saves ~20s per run.
       - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          python -m playwright install --with-deps chromium
+        run: pip install -r requirements.txt
 
       - name: Render PDF and send email
         run: python scripts/kobo_pdf_mailer.py
