@@ -1,0 +1,48 @@
+name: Kobo submission PDF email
+
+on:
+  # Fired by the Kobo REST Service on every new submission.
+  repository_dispatch:
+    types: [kobo_submission]
+  # Manual (re)send of one submission, also handy for testing.
+  workflow_dispatch:
+    inputs:
+      submission_id:
+        description: Kobo submission _id to (re)send
+        required: true
+
+jobs:
+  send-pdf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Render PDF and send email
+        run: python scripts/kobo_pdf_mailer.py
+        env:
+          # The submission payload is NOT passed here: env values are printed in the
+          # run log. The script reads only the id from the event file on the runner.
+          SUBMISSION_ID: ${{ inputs.submission_id }}
+          KOBO_SERVER: ${{ vars.KOBO_SERVER }}
+          KOBO_ASSET_UID: ${{ vars.KOBO_ASSET_UID }}
+          EMAIL_FIELD: ${{ vars.EMAIL_FIELD }}
+          MAIL_SUBJECT: ${{ vars.MAIL_SUBJECT }}
+          MAIL_BODY: ${{ vars.MAIL_BODY }}
+          MAIL_FROM: ${{ vars.MAIL_FROM }}
+          MAIL_BCC: ${{ vars.MAIL_BCC }}
+          SMTP_HOST: ${{ vars.SMTP_HOST }}
+          SMTP_PORT: ${{ vars.SMTP_PORT }}
+          KOBO_TOKEN: ${{ secrets.KOBO_TOKEN }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
