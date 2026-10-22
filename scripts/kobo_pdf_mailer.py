@@ -119,6 +119,18 @@ def item_name(item):
     return item.get("name") or item.get("$autoname") or ""
 
 
+def plain_text(label):
+    """Strip the Markdown/HTML styling Kobo allows in labels, e.g.
+    '### <span style="color:red">Title</span>' -> 'Title'."""
+    text = re.sub(r"<[^>]*>", "", label)                          # HTML tags
+    text = re.sub(r"^\s{0,3}#{1,6}\s*", "", text, flags=re.M)     # headings
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)          # links
+    text = re.sub(r"(\*\*|__)(.+?)\1", r"\2", text)               # bold
+    text = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"\1", text)  # *italic*
+    text = re.sub(r"(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)", r"\1", text)          # _italic_
+    return html.unescape(text).strip()
+
+
 class Form:
     """The parts of the Kobo form definition needed to label answers."""
 
@@ -163,7 +175,7 @@ class Form:
         if isinstance(label, list):
             picked = label[self.lang] if self.lang < len(label) else None
             label = picked or next((l for l in label if l), None)
-        return label or item_name(item)
+        return plain_text(label or "") or item_name(item)
 
 
 class Renderer:
