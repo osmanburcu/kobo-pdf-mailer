@@ -22,6 +22,7 @@ import requests
 from playwright.sync_api import sync_playwright
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+ASSET_UID_RE = re.compile(r"^[A-Za-z0-9]+$")
 
 KOBO_SERVER = os.environ.get("KOBO_SERVER", "https://kf.kobotoolbox.org").rstrip("/")
 KOBO_HEADERS = {"Authorization": f"Token {os.environ.get('KOBO_TOKEN', '')}"}
@@ -66,28 +67,43 @@ def kobo_get(path, **params):
     return kobo_request(path, **params).json()
 
 
-def submission_id():
-    # Only the id is taken from the trigger. Everything else (including the
-    # recipient) is re-read from Kobo, so a forged trigger can't redirect a
-    # submission to a different address.
+def trigger():
+    """Return (asset_uid, submission_id) for this run.
+
+    Only these two ids are taken from the trigger. Everything else (including
+    the recipient) is re-read from Kobo, so a forged trigger can't redirect a
+    submission to a different address.
+    """
     event_path = env("GITHUB_EVENT_PATH")
     if env("GITHUB_EVENT_NAME") == "repository_dispatch" and event_path:
         event = json.loads(Path(event_path).read_text(encoding="utf-8"))
-        raw = event["client_payload"]["submission"]["_id"]
+        submission = event["client_payload"]["submission"]
+        # Kobo puts the project (asset) uid in every submission it sends.
+        asset_uid = submission.get("_xform_id_string") or env("KOBO_ASSET_UID")
+        raw_id = submission["_id"]
     else:
-        raw = env("SUBMISSION_ID")
-    return int(raw)
+        asset_uid = env("KOBO_ASSET_UID")
+        raw_id = env("SUBMISSION_ID")
+
+    if not asset_uid or not ASSET_UID_RE.match(asset_uid):
+        sys.exit(f"Missing or invalid Kobo project uid: {asset_uid!r}")
+    allowed = [u.strip() for u in (env("ALLOWED_ASSET_UIDS") or "").split(",") if u.strip()]
+    if allowed and asset_uid not in allowed:
+        sys.exit(f"Project {asset_uid} is not in ALLOWED_ASSET_UIDS, nothing sent.")
+    return asset_uid, int(raw_id)
 
 
 def find_recipient(submission):
-    field = env("EMAIL_FIELD")
-    if field:
+    # EMAIL_FIELD may list several question names (one per form), comma-separated.
+    fields = [f.strip() for f in (env("EMAIL_FIELD") or "").split(",") if f.strip()]
+    if fields:
         # Kobo prefixes grouped questions with their group path, e.g. "contact/email".
-        for key, value in submission.items():
-            if key == field or key.endswith("/" + field):
-                candidate = str(value).strip()
-                if EMAIL_RE.match(candidate):
-                    return candidate
+        for field in fields:
+            for key, value in submission.items():
+                if key == field or key.endswith("/" + field):
+                    candidate = str(value).strip()
+                    if EMAIL_RE.match(candidate):
+                        return candidate
         return None
 
     # No field configured: take the first answer that looks like an email address.
@@ -247,7 +263,10 @@ def render_pdf(page_html, out_path):
 
 # ---------------------------------------------------------------- email
 
-def send_mail(recipient, pdf_path, submission):
+def send_mail(recipient, pdf_path, submission, form_title):
+    def fill(text):
+        return text.replace("{form}", form_title)
+
     msg = EmailMessage()
     sender = env("MAIL_FROM", env("SMTP_USERNAME"))
     if env("MAIL_FROM_NAME"):
@@ -256,11 +275,12 @@ def send_mail(recipient, pdf_path, submission):
     msg["To"] = recipient
     if env("MAIL_BCC"):
         msg["Bcc"] = env("MAIL_BCC")
-    msg["Subject"] = env("MAIL_SUBJECT", "Your form submission")
-    msg.set_content(env(
+    msg["Subject"] = fill(env("MAIL_SUBJECT", "Your submission: {form}"))
+    msg.set_content(fill(env(
         "MAIL_BODY",
-        "Hello,\n\nThank you for your submission. A copy of the form is attached as a PDF.\n",
-    ))
+        "Hello,\n\nThank you for your submission to \"{form}\". "
+        "A copy of the form is attached as a PDF.\n",
+    )))
     msg.add_attachment(
         pdf_path.read_bytes(),
         maintype="application",
@@ -288,10 +308,7 @@ def mask(address):
 
 
 def main():
-    asset_uid = env("KOBO_ASSET_UID")
-    if not asset_uid:
-        sys.exit("KOBO_ASSET_UID is not set.")
-    sub_id = submission_id()
+    asset_uid, sub_id = trigger()
     submission = kobo_get(f"/api/v2/assets/{asset_uid}/data/{sub_id}/", format="json")
 
     recipient = find_recipient(submission)
@@ -302,9 +319,9 @@ def main():
     form = Form(kobo_get(f"/api/v2/assets/{asset_uid}/", format="json"))
     pdf_path = Path(env("RUNNER_TEMP", ".")) / f"submission-{sub_id}.pdf"
     render_pdf(Renderer(form, submission).render(), pdf_path)
-    send_mail(recipient, pdf_path, submission)
+    send_mail(recipient, pdf_path, submission, form.title)
     # Logs may be visible to repo collaborators, so don't print the full address.
-    print(f"Submission {sub_id}: PDF sent to {mask(recipient)}")
+    print(f"Project {asset_uid}, submission {sub_id}: PDF sent to {mask(recipient)}")
 
 
 if __name__ == "__main__":

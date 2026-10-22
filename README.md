@@ -37,15 +37,16 @@ Kobo submission ──REST Service──▶ api.github.com/repos/<owner>/<repo>/
 | Variable | Example | Notes |
 |---|---|---|
 | `KOBO_SERVER` | `https://kf.kobotoolbox.org` | `https://eu.kobotoolbox.org` for the EU server |
-| `KOBO_ASSET_UID` | `aBcD123...` | **Required.** From the project URL: `.../#/forms/<ASSET_UID>/...` |
-| `EMAIL_FIELD` | `email` | Name of the email question in XLSForm (group prefix not needed). If empty, the first answer that looks like an email is used. |
+| `KOBO_ASSET_UID` | `aBcD123...` | Only for **manual** runs: the project used when none is entered. Kobo triggers carry their own project uid (`_xform_id_string`). From the project URL: `.../#/forms/<ASSET_UID>/...` |
+| `ALLOWED_ASSET_UIDS` | `aBcD123,eFgH456` | Optional, comma-separated. If set, submissions from any other project are ignored. |
+| `EMAIL_FIELD` | `email, contact_email` | Name(s) of the email question, comma-separated if your forms use different names (group prefix not needed). If empty, the first answer that looks like an email is used. |
 | `FORM_LANGUAGE` | `English` | Optional, for multi-language forms: which label language to print |
 | `SMTP_HOST` | `smtp.gmail.com` | |
 | `SMTP_PORT` | `465` | `465` = SSL, anything else = STARTTLS (e.g. `587`) |
 | `MAIL_FROM` | `Survey Team <you@gmail.com>` | Optional, defaults to `SMTP_USERNAME` |
 | `MAIL_FROM_NAME` | `Survey Team` | Optional sender name shown in the inbox; the address stays `MAIL_FROM` / `SMTP_USERNAME` |
-| `MAIL_SUBJECT` | `Your form submission` | Optional |
-| `MAIL_BODY` | | Optional plain-text body |
+| `MAIL_SUBJECT` | `Your submission: {form}` | Optional; `{form}` is replaced by the form's name |
+| `MAIL_BODY` | | Optional plain-text body; `{form}` works here too |
 | `MAIL_BCC` | `archive@example.org` | Optional, get a copy of every email |
 
 ## 2. GitHub token for Kobo
@@ -58,14 +59,18 @@ Create a **fine-grained personal access token**
 
 ## 3. Kobo REST Service
 
-In your Kobo project: **Settings → REST Services → Register a new service**
+Do this **once per Kobo project** that should email PDFs; the settings are the
+same for every project, and the one workflow handles them all.
+
+In the Kobo project: **Settings → REST Services → Register a new service**
 
 - **Endpoint URL:** `https://api.github.com/repos/<owner>/<repo>/dispatches`
 - **Type:** JSON
+- **Security:** Basic Authorization, username = your GitHub username,
+  password = your fine-grained token (a custom `Authorization` header did not
+  reach GitHub from Kobo)
 - **Custom HTTP Headers:**
-  - `Authorization` → `Bearer <your fine-grained token>`
   - `Accept` → `application/vnd.github+json`
-  - `X-GitHub-Api-Version` → `2022-11-28`
 - **Add custom wrapper around JSON submission:**
 
   ```
